@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Block Blast Pro - 完整版</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --grid-bg: #1e293b;
+            --cell-empty: #334155;
+            --cell-filled: #38bdf8;
+            --cell-preview: rgba(56, 189, 248, 0.3);
+            --accent: #fbbf24;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            overflow: hidden; /* 防止手機端拖動時頁面滾動 */
+            touch-action: none;
+        }
+
+        #header {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .score-box {
+            font-size: 32px;
+            font-weight: bold;
+            color: var(--accent);
+            text-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
+        }
+
+        /* 遊戲網格 */
+        #grid-container {
+            position: relative;
+            background: var(--grid-bg);
+            padding: 10px;
+            border-radius: 12px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            display: grid;
+            grid-template-columns: repeat(8, 45px);
+            grid-template-rows: repeat(8, 45px);
+            gap: 5px;
+        }
+
+        .cell {
+            width: 45px;
+            height: 45px;
+            background: var(--cell-empty);
+            border-radius: 4px;
+            transition: background 0.1s;
+        }
+
+        .cell.filled { background: var(--cell-filled); box-shadow: inset 0 0 8px rgba(0,0,0,0.3); }
+        .cell.preview { background: var(--cell-preview); }
+
+        /* 下方方塊區域 */
+        #pieces-area {
+            margin-top: 40px;
+            display: flex;
+            gap: 30px;
+            height: 150px;
+            align-items: center;
+        }
+
+        .piece {
+            display: grid;
+            gap: 2px;
+            cursor: grab;
+            transition: transform 0.2s;
+        }
+
+        .piece:hover { transform: scale(1.05); }
+
+        .p-cell { width: 25px; height: 25px; border-radius: 3px; }
+        .p-filled { background: var(--cell-filled); }
+
+        /* 浮動拖拽元素 */
+        .dragging {
+            position: fixed;
+            pointer-events: none;
+            z-index: 1000;
+            transform: scale(1.2); /* 拖起時放大，更像手機遊戲感 */
+            opacity: 0.9;
+        }
+
+        button {
+            margin-top: 20px;
+            background: var(--accent);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        button:hover { opacity: 0.8; transform: translateY(-2px); }
+    </style>
+</head>
+<body>
+
+<div id="header">
+    <div class="score-box">SCORE: <span id="score">0</span></div>
+    <button onclick="uploadScore()">上傳分數</button>
+</div>
+
+<div id="grid-container"></div>
+
+<div id="pieces-area"></div>
+
+<script>
+    // --- 配置區域 ---
+    const GRID_SIZE = 8;
+    const API_URL = "你的_GOOGLE_APPS_SCRIPT_URL"; // 請在此替換你的 GAS URL
+
+    // --- 遊戲狀態 ---
+    let score = 0;
+    let gridData = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
+    let draggingInfo = null;
+
+    // 方塊形狀定義
+    const SHAPES = [
+        [[1,1],[1,1]], // 田
+        [[1,1,1,1]],   // 長條
+        [[1,1,1]],     // 短條
+        [[1,1,1],[0,1,0]], // T
+        [[1,1],[1,0],[1,0]], // L
+        [[1,1],[0,1,1]], // Z
+        [[1]] // 點
+    ];
+
+    const gridEl = document.getElementById('grid-container');
+    const piecesArea = document.getElementById('pieces-area');
+    const scoreEl = document.getElementById('score');
+
+    // 初始化網格 HTML
+    function initGrid() {
+        gridEl.innerHTML = '';
+        for (let r = 0; r < GRID_SIZE; r++) {
+            for (let c = 0; c < GRID_SIZE; c++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.id = `c-${r}-${c}`;
+                gridEl.appendChild(cell);
+            }
+        }
+    }
+
+    // 生成隨機方塊
+    function spawnPieces() {
+        piecesArea.innerHTML = '';
+        for (let i = 0; i < 3; i++) {
+            const shape = SHAPES[Math.floor(Math.random() * SHAPES.length)];
+            const pieceDiv = document.createElement('div');
+            pieceDiv.className = 'piece';
+            pieceDiv.style.gridTemplateColumns = `repeat(${shape[0].length}, 25px)`;
+
+            shape.forEach((row) => {
+                row.forEach((val) => {
+                    const div = document.createElement('div');
+                    div.className = val ? 'p-cell p-filled' : 'p-cell';
+                    pieceDiv.appendChild(div);
+                });
+            });
+
+            // 註冊滑鼠按下事件 (開始拖拽)
+            pieceDiv.onmousedown = (e) => startDrag(e, shape, pieceDiv);
+            pieceDiv.ontouchstart = (e) => startDrag(e.touches[0], shape, pieceDiv);
+           
+            piecesArea.appendChild(pieceDiv);
+        }
+    }
+
+    // 拖拽邏輯
+    function startDrag(e, shape, originalEl) {
+        const clone = originalEl.cloneNode(true);
+        clone.classList.add('dragging');
+        document.body.appendChild(clone);
+       
+        originalEl.style.visibility = 'hidden';
+       
+        draggingInfo = {
+            el: clone,
+            original: originalEl,
+            shape: shape,
+            offsetX: clone.offsetWidth / 2,
+            offsetY: clone.offsetHeight / 2
+        };
+
+        moveDrag(e);
+    }
+
+    function moveDrag(e) {
+        if (!draggingInfo) return;
+       
+        const x = e.clientX || e.touches[0].clientX;
+        const y = e.clientY || e.touches[0].clientY;
+       
+        draggingInfo.el.style.left = `${x - draggingInfo.offsetX}px`;
+        draggingInfo.el.style.top = `${y - draggingInfo.offsetY}px`;
+
+        // 預覽邏輯
+        clearPreview();
+        const pos = getGridCoord(x, y);
+        if (pos && canPlace(pos.r, pos.c, draggingInfo.shape)) {
+            showPreview(pos.r, pos.c, draggingInfo.shape);
+        }
+    }
+
+    function endDrag(e) {
+        if (!draggingInfo) return;
+       
+        const x = e.clientX || e.changedTouches[0].clientX;
+        const y = e.clientY || e.changedTouches[0].clientY;
+        const pos = getGridCoord(x, y);
+
+        if (pos && canPlace(pos.r, pos.c, draggingInfo.shape)) {
+            placePiece(pos.r, pos.c, draggingInfo.shape);
+            draggingInfo.original.remove(); // 永久移除
+        } else {
+            draggingInfo.original.style.visibility = 'visible';
+        }
+
+        document.body.removeChild(draggingInfo.el);
+        draggingInfo = null;
+        clearPreview();
+
+        // 檢查是否所有方塊都用完
+        if (piecesArea.querySelectorAll('.piece').length === 0) {
+            spawnPieces();
+        }
+    }
+
+    // 工具：換算座標
+    function getGridCoord(x, y) {
+        const rect = gridEl.getBoundingClientRect();
+        // 45px cell + 5px gap = 50
+        const c = Math.floor((x - rect.left) / 50);
+        const r = Math.floor((y - rect.top) / 50);
+        if (r >= 0 && r < GRID_SIZE && c >= 0 && c < GRID_SIZE) return {r, c};
+        return null;
+    }
+
+    function canPlace(r, c, shape) {
+        for (let ri = 0; ri < shape.length; ri++) {
+            for (let ci = 0; ci < shape[ri].length; ci++) {
+                if (shape[ri][ci]) {
+                    const nr = r + ri, nc = c + ci;
+                    if (nr >= GRID_SIZE || nc >= GRID_SIZE || gridData[nr][nc] === 1) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    function showPreview(r, c, shape) {
+        shape.forEach((row, ri) => {
+            row.forEach((val, ci) => {
+                if (val) {
+                    const el = document.getElementById(`c-${r+ri}-${c+ci}`);
+                    if (el) el.classList.add('preview');
+                }
+            });
+        });
+    }
+
+    function clearPreview() {
+        document.querySelectorAll('.cell.preview').forEach(c => c.classList.remove('preview'));
+    }
+
+    function placePiece(r, c, shape) {
+        shape.forEach((row, ri) => {
+            row.forEach((val, ci) => {
+                if (val) {
+                    gridData[r+ri][c+ci] = 1;
+                    document.getElementById(`c-${r+ri}-${c+ci}`).classList.add('filled');
+                }
+            });
+        });
+        score += shape.flat().filter(v => v).length;
+        checkLines();
+        scoreEl.innerText = score;
+    }
+
+    function checkLines() {
+        let rows = [], cols = [];
+        for (let i = 0; i < GRID_SIZE; i++) {
+            if (gridData[i].every(v => v === 1)) rows.push(i);
+            if (gridData.map(r => r[i]).every(v => v === 1)) cols.push(i);
+        }
+
+        rows.forEach(r => {
+            gridData[r].fill(0);
+            for(let c=0; c<GRID_SIZE; c++) document.getElementById(`c-${r}-${c}`).classList.remove('filled');
+        });
+        cols.forEach(c => {
+            for(let r=0; r<GRID_SIZE; r++) {
+                gridData[r][c] = 0;
+                document.getElementById(`c-${r}-${c}`).classList.remove('filled');
+            }
+        });
+
+        if (rows.length || cols.length) score += (rows.length + cols.length) * 10;
+    }
+
+    // 監聽全域事件
+    window.onmousemove = moveDrag;
+    window.onmouseup = endDrag;
+    window.ontouchmove = (e) => moveDrag(e.touches[0]);
+    window.ontouchend = endDrag;
+
+    async function uploadScore() {
+        const name = prompt("輸入大名以載入史冊：");
+        if (!name || API_URL.includes("你的")) return alert("請先設定 API URL");
+       
+        try {
+            await fetch(API_URL, {
+                method: "POST",
+                mode: "no-cors",
+                body: JSON.stringify({ name, score })
+            });
+            alert("分數已送出！");
+        } catch (e) { alert("上傳失敗"); }
+    }
+
+    // 啟動遊戲
+    initGrid();
+    spawnPieces();
+</script>
+</body>
+</html>
